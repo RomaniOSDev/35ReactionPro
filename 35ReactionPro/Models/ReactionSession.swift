@@ -128,3 +128,4 @@ enum HandPreference: String, CaseIterable, Codable {
     case both = "Both"
 }
 
+

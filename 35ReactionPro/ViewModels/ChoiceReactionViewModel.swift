@@ -56,23 +56,23 @@ class ChoiceReactionViewModel: ObservableObject {
         
         var newStimuli: [(type: StimulusType, position: CGPoint, isTarget: Bool)] = []
         
-        // Generate target stimulus
-        let target = stimulusGenerator.generateStimulus(
-            for: test,
-            difficulty: test.difficulty,
-            screenSize: screenSize
+        // Generate target stimulus - always from targetStimuli
+        let targetType = test.targetStimuli.randomElement() ?? test.targetStimuli.first ?? .colorGreen
+        let targetPosition = CGPoint(
+            x: CGFloat.random(in: 0.1...0.9) * screenSize.width,
+            y: CGFloat.random(in: 0.1...0.9) * screenSize.height
         )
-        newStimuli.append((target.stimulus, target.position, true))
+        newStimuli.append((targetType, targetPosition, true))
         
-        // Generate distractor stimuli
+        // Generate distractor stimuli - always from distractorStimuli
         if let distractors = test.distractorStimuli, !distractors.isEmpty {
             for _ in 0..<2 {
-                let distractor = stimulusGenerator.generateStimulus(
-                    for: test,
-                    difficulty: test.difficulty,
-                    screenSize: screenSize
+                let distractorType = distractors.randomElement() ?? distractors.first ?? .colorRed
+                let distractorPosition = CGPoint(
+                    x: CGFloat.random(in: 0.1...0.9) * screenSize.width,
+                    y: CGFloat.random(in: 0.1...0.9) * screenSize.height
                 )
-                newStimuli.append((distractor.stimulus, distractor.position, false))
+                newStimuli.append((distractorType, distractorPosition, false))
             }
         }
         
@@ -104,7 +104,10 @@ class ChoiceReactionViewModel: ObservableObject {
         results.totalTrials += 1
         
         if let tapped = tappedStimulus {
-            if tapped.isTarget {
+            // Check if tapped stimulus is in targetStimuli (correct answer)
+            let isCorrect = test.targetStimuli.contains(tapped.type)
+            
+            if isCorrect {
                 results.correctTrials += 1
                 feedbackColor = .accentGreen
             } else {
