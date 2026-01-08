@@ -12,6 +12,8 @@ class CheckURLService {
     // MARK: - Shared Instance
     static let shared = CheckURLService()
     private var currentTask: URLSessionDataTask?
+    private var isCompletionCalled = false
+    private var fallbackWorkItem: DispatchWorkItem?
     
     // MARK: - Configuration
     private let session: URLSession
@@ -20,7 +22,7 @@ class CheckURLService {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 8.0
         configuration.timeoutIntervalForResource = 12.0
-        configuration.waitsForConnectivity = true
+        configuration.waitsForConnectivity = false // Убрано для предотвращения зависания
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         
         self.session = URLSession(configuration: configuration)
@@ -38,8 +40,11 @@ class CheckURLService {
     }
     
     func cancelCurrentCheck() {
+        fallbackWorkItem?.cancel()
+        fallbackWorkItem = nil
         currentTask?.cancel()
         currentTask = nil
+        isCompletionCalled = false
     }
     
     // MARK: - Private Methods
@@ -55,6 +60,7 @@ class CheckURLService {
     
     private func performCheck(url: URL, completion: @escaping (Bool) -> Void) {
         cancelCurrentCheck()
+        isCompletionCalled = false
         
         var request = URLRequest(url: url)
         request.httpMethod = "HEAD"
@@ -63,37 +69,63 @@ class CheckURLService {
         
         print("🔍 CheckURLService: Checking URL: \(url.absoluteString)")
         
+        // Создаем защищенный completion handler
+        let safeCompletion: (Bool) -> Void = { [weak self] result in
+            guard let self = self else { return }
+            
+            // Защита от повторного вызова
+            guard !self.isCompletionCalled else {
+                print("⚠️ CheckURLService: Completion already called, ignoring duplicate call")
+                return
+            }
+            
+            self.isCompletionCalled = true
+            self.fallbackWorkItem?.cancel()
+            self.fallbackWorkItem = nil
+            self.currentTask = nil
+            
+            DispatchQueue.main.async {
+                completion(result)
+            }
+        }
+        
         let task = session.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
-            self.currentTask = nil
             
             // Обрабатываем ошибки
             if let error = error {
                 let errorMessage: String
+                let shouldComplete: Bool
                 
                 switch (error as NSError).code {
                 case NSURLErrorTimedOut:
                     errorMessage = "Request timed out"
+                    shouldComplete = true
                 case NSURLErrorNotConnectedToInternet:
                     errorMessage = "No internet connection"
+                    shouldComplete = true
                 case NSURLErrorNetworkConnectionLost:
                     errorMessage = "Network connection lost"
+                    shouldComplete = true
                 case NSURLErrorCancelled:
                     print("ℹ️ CheckURLService: Request cancelled")
-                    return
+                    return // Не вызываем completion для отмененных запросов
                 default:
                     errorMessage = error.localizedDescription
+                    shouldComplete = true
                 }
                 
-                print("❌ CheckURLService: Error: \(errorMessage)")
-                DispatchQueue.main.async { completion(false) }
+                if shouldComplete {
+                    print("❌ CheckURLService: Error: \(errorMessage)")
+                    safeCompletion(false)
+                }
                 return
             }
             
             // Проверяем HTTP response
             guard let httpResponse = response as? HTTPURLResponse else {
                 print("❌ CheckURLService: No HTTP response")
-                DispatchQueue.main.async { completion(false) }
+                safeCompletion(false)
                 return
             }
             
@@ -121,23 +153,26 @@ class CheckURLService {
                 isValidResponse = false
             }
             
-            DispatchQueue.main.async {
-                completion(isValidResponse)
-            }
+            safeCompletion(isValidResponse)
         }
         
         currentTask = task
-        task.resume()
         
-        // Fallback таймаут
-        DispatchQueue.main.asyncAfter(deadline: .now() + 15.0) { [weak self] in
-            if let task = self?.currentTask, task.state == .running {
+        // Fallback таймаут с улучшенной логикой
+        let fallbackWorkItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            
+            if !self.isCompletionCalled {
                 print("⚠️ CheckURLService: Forcing timeout completion for URL: \(url.absoluteString)")
-                self?.currentTask?.cancel()
-                self?.currentTask = nil
-                completion(false)
+                self.currentTask?.cancel()
+                safeCompletion(false)
             }
         }
+        
+        self.fallbackWorkItem = fallbackWorkItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15.0, execute: fallbackWorkItem)
+        
+        task.resume()
     }
     
     deinit {
